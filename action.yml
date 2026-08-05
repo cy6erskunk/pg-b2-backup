@@ -1,0 +1,94 @@
+name: 'Postgres to Backblaze B2 backup'
+description: 'Dump a Postgres database and upload a gzipped backup to a Backblaze B2 bucket, with retention pruning.'
+branding:
+  icon: 'database'
+  color: 'blue'
+
+inputs:
+  database-url:
+    description: 'Postgres connection string to back up.'
+    required: true
+  b2-application-key-id:
+    description: 'Backblaze B2 application key ID (used as the S3-compatible access key id).'
+    required: true
+  b2-application-key:
+    description: 'Backblaze B2 application key (used as the S3-compatible secret access key).'
+    required: true
+  b2-bucket-name:
+    description: 'Target B2 bucket name.'
+    required: true
+  b2-region:
+    description: "Middle segment of the bucket's S3 endpoint, e.g. an endpoint of s3.eu-central-003.backblazeb2.com => eu-central-003."
+    required: true
+  folder-name:
+    description: 'Prefix (folder) inside the bucket. Defaults to the calling repository name.'
+    required: false
+    default: ''
+  retention-days:
+    description: 'Delete .gz backups older than this many days.'
+    required: false
+    default: '7'
+  pg-version:
+    description: 'PostgreSQL major version to install. Must be >= the server version being dumped.'
+    required: false
+    default: '17'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install PostgreSQL client
+      shell: bash
+      run: |
+        sudo apt update
+        yes '' | sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+        sudo apt install -y postgresql-client-${{ inputs.pg-version }}
+
+    - name: Dump, prune and upload
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database-url }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.b2-application-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.b2-application-key }}
+        B2_BUCKET_NAME: ${{ inputs.b2-bucket-name }}
+        B2_REGION: ${{ inputs.b2-region }}
+        RETENTION: ${{ inputs.retention-days }}
+        PG_VERSION: ${{ inputs.pg-version }}
+        FOLDER_NAME_INPUT: ${{ inputs.folder-name }}
+      run: |
+        set -euo pipefail
+
+        POSTGRES="/usr/lib/postgresql/${PG_VERSION}/bin"
+        B2_ENDPOINT="https://s3.${B2_REGION}.backblazeb2.com"
+
+        FOLDER_NAME="${FOLDER_NAME_INPUT}"
+        if [ -z "$FOLDER_NAME" ]; then
+          FOLDER_NAME="${GITHUB_REPOSITORY##*/}"
+        fi
+
+        GZIP_NAME="$(date +'%B-%d-%Y@%H:%M:%S').sql.gz"
+        UPLOAD_PATH="s3://${B2_BUCKET_NAME}/${FOLDER_NAME}/${GZIP_NAME}"
+
+        echo "Dumping database to ${GZIP_NAME}..."
+        "$POSTGRES/pg_dump" "$DATABASE_URL" | gzip > "$GZIP_NAME"
+
+        echo "Pruning .gz backups older than ${RETENTION} days under ${FOLDER_NAME}/..."
+        THRESHOLD_DATE=$(date -d "-${RETENTION} days" +%Y-%m-%dT%H:%M:%SZ)
+        aws s3api list-objects \
+          --endpoint-url "$B2_ENDPOINT" \
+          --region "$B2_REGION" \
+          --bucket "$B2_BUCKET_NAME" \
+          --prefix "${FOLDER_NAME}/" \
+          --query "Contents[?LastModified<'${THRESHOLD_DATE}'] | [?ends_with(Key, '.gz')].{Key: Key}" \
+          --output text | while read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
+            aws s3 rm "s3://${B2_BUCKET_NAME}/${file}" \
+              --endpoint-url "$B2_ENDPOINT" --region "$B2_REGION"
+        done
+
+        echo "Uploading to ${UPLOAD_PATH}..."
+        aws s3 cp "$GZIP_NAME" "$UPLOAD_PATH" \
+          --endpoint-url "$B2_ENDPOINT" --region "$B2_REGION"
+
+        echo "Backup complete: ${UPLOAD_PATH}"
