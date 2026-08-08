@@ -39,8 +39,9 @@ runs:
     - name: Install PostgreSQL client
       shell: bash
       run: |
+        set -euo pipefail
         sudo apt update
-        yes '' | sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
         sudo apt install -y postgresql-client-${{ inputs.pg-version }}
 
     - name: Dump, prune and upload
