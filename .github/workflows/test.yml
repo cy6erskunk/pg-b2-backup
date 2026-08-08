@@ -1,0 +1,25 @@
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: test }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          database-url: postgres://postgres:test@localhost:5432/postgres
+          b2-application-key-id: ${{ secrets.B2_KEY_ID }}
+          b2-application-key: ${{ secrets.B2_KEY }}
+          b2-bucket-name: ${{ secrets.B2_TEST_BUCKET }}
+          b2-region: eu-central-003
+
