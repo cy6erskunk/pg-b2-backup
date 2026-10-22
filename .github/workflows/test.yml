@@ -4,7 +4,7 @@ on:
   pull_request:
 jobs:
   smoke:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     services:
       postgres:
         image: postgres:16
